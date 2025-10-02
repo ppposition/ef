@@ -9,6 +9,10 @@ from datetime import date
 import sqlite3
 import os
 import uuid
+import httpx
+import json
+import asyncio
+from functools import wraps
 
 app = FastAPI()
 
@@ -30,6 +34,13 @@ security = HTTPBearer()
 
 # 数据库路径
 DB_PATH = "fitness_app.db"
+
+# 大模型API配置
+LLM_API_URL = os.getenv("LLM_API_URL", "https://chat.sjtu.plus/v1/chat/completions")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "sk-dHU4iob3mi1Bgkqr444dC5Be9d714758A2Ca05D30b201324")
+LLM_MODEL = os.getenv("LLM_MODEL", "z-ai/glm-4.6")
+LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "30"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
 # 创建数据库连接
 def get_db_connection():
@@ -90,6 +101,41 @@ def init_db():
 
 # 启动时初始化数据库
 init_db()
+
+# 清理超过7天的聊天记录
+def cleanup_old_chat_messages():
+    """删除超过7天的聊天记录"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 计算7天前的日期
+        seven_days_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        cursor.execute(
+            "DELETE FROM chat_messages WHERE created_at < ?",
+            (seven_days_ago,)
+        )
+        
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        if deleted_count > 0:
+            print(f"已删除 {deleted_count} 条超过7天的聊天记录")
+    except Exception as e:
+        print(f"清理旧聊天记录时出错: {str(e)}")
+        # 确保连接被关闭
+        try:
+            conn.close()
+        except:
+            pass
+
+# 启动时清理旧记录
+try:
+    cleanup_old_chat_messages()
+except Exception as e:
+    print(f"启动时清理旧记录失败: {str(e)}")
 
 # 用户数据模型
 class User(BaseModel):
@@ -189,6 +235,126 @@ def get_user_id(username: str):
     user = cursor.fetchone()
     conn.close()
     return user["id"] if user else None
+
+def retry_on_failure(max_retries=LLM_MAX_RETRIES, delay=1):
+    """重试装饰器，用于API调用失败时重试"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(delay * (2 ** attempt))  # 指数退避
+                    else:
+                        raise last_exception
+            return None
+        return wrapper
+    return decorator
+
+@retry_on_failure()
+async def call_llm_api(user_message: str, user_context: Dict) -> str:
+    """调用大模型API获取响应"""
+    
+    # 构建系统提示词，包含用户上下文信息
+    system_prompt = f"""
+    你是一个专业的健身顾问AI助手。请根据用户的个人信息和健身记录提供专业的健身建议。
+    
+    用户信息：
+    - 用户名：{user_context.get('username', '未知')}
+    - 出生日期：{user_context.get('birth_date', '未知')}
+    - 身高：{user_context.get('height', '未知')} cm
+    - 体重：{user_context.get('weight', '未知')} kg
+    
+    最近的健身记录：
+    {format_fitness_records(user_context.get('recent_fitness_records', []))}
+    
+    请根据这些信息，针对用户的问题提供专业、个性化的健身建议。回答要简洁明了，重点突出。
+    """
+    
+    # 准备请求数据
+    headers = {
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ],
+        "max_tokens": 3000,
+        "temperature": 0.7
+    }
+    
+    # 发送请求
+    async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
+        try:
+            response = await client.post(LLM_API_URL, headers=headers, json=payload)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            # 解析响应（根据不同API格式可能需要调整）
+            if "choices" in result and len(result["choices"]) > 0:
+                return result["choices"][0]["message"]["content"]
+            else:
+                raise ValueError("API响应格式不正确")
+                
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status_code=e.response.status_code,
+                detail=f"大模型API调用失败: {e.response.text}"
+            )
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"网络请求失败: {str(e)}"
+            )
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=500,
+                detail="API响应解析失败"
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"调用大模型API时发生错误: {str(e)}"
+            )
+
+def format_fitness_records(records: List[Dict]) -> str:
+    """格式化健身记录为可读文本"""
+    if not records:
+        return "暂无健身记录"
+    
+    formatted = []
+    for record in records:
+        date = record.get('date', '未知日期')
+        part = record.get('part', '未知部位')
+        exercise = record.get('exercise', '')
+        sets = record.get('sets', '')
+        reps = record.get('reps', '')
+        distance = record.get('distance', '')
+        minutes = record.get('minutes', '')
+        seconds = record.get('seconds', '')
+        
+        record_text = f"- {date} {part}"
+        if exercise:
+            record_text += f" - {exercise}"
+        if sets and reps:
+            record_text += f" ({sets}组 × {reps}次)"
+        if distance:
+            record_text += f" - {distance}米"
+        if minutes or seconds:
+            record_text += f" - {minutes}分{seconds}秒"
+        
+        formatted.append(record_text)
+    
+    return "\n".join(formatted)
 
 @app.get("/")
 async def root():
@@ -402,6 +568,13 @@ async def chat_with_ai(
     if not user_id:
         raise HTTPException(status_code=404, detail="用户不存在")
     
+    # 清理超过7天的旧聊天记录
+    try:
+        cleanup_old_chat_messages()
+    except Exception as e:
+        print(f"聊天时清理旧记录失败: {str(e)}")
+        # 不影响正常聊天功能，继续执行
+    
     # 获取用户信息
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -416,9 +589,9 @@ async def chat_with_ai(
     cursor.execute(
         """
         SELECT date, part, exercise, sets, reps, distance, minutes, seconds
-        FROM fitness_records 
-        WHERE user_id = ? 
-        ORDER BY date DESC 
+        FROM fitness_records
+        WHERE user_id = ?
+        ORDER BY date DESC
         LIMIT 10
         """,
         (user_id,)
@@ -436,34 +609,55 @@ async def chat_with_ai(
     conn.close()
     
     # 准备发送给大模型的数据
-    user_data = {
+    user_context = {
         "username": username,
         "birth_date": user_info["birth_date"] if user_info else None,
         "height": user_info["height"] if user_info else None,
         "weight": user_info["weight"] if user_info else None,
-        "recent_fitness_records": [dict(record) for record in recent_records],
-        "user_message": chat_message.message
+        "recent_fitness_records": [dict(record) for record in recent_records]
     }
     
-    # 这里应该调用大模型API，但现在我们只返回一个模拟响应
-    # 在实际应用中，你需要替换为真实的大模型API调用
-    ai_response = f"根据您的健身记录和个人信息，我建议您：{chat_message.message}"
-    
-    # 更新聊天记录，添加AI响应
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE chat_messages SET response = ? WHERE id = ?",
-        (ai_response, message_id)
-    )
-    conn.commit()
-    conn.close()
-    
-    return {
-        "message": chat_message.message,
-        "response": ai_response,
-        "message_id": message_id
-    }
+    try:
+        # 调用大模型API获取响应
+        ai_response = await call_llm_api(chat_message.message, user_context)
+        
+        # 更新聊天记录，添加AI响应
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE chat_messages SET response = ? WHERE id = ?",
+            (ai_response, message_id)
+        )
+        conn.commit()
+        conn.close()
+        
+        return {
+            "message": chat_message.message,
+            "response": ai_response,
+            "message_id": message_id
+        }
+        
+    except HTTPException:
+        # 如果是HTTPException，直接重新抛出
+        raise
+    except Exception as e:
+        # 其他异常，记录错误并返回友好提示
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        error_response = f"抱歉，服务暂时不可用，请稍后再试。错误信息：{str(e)}"
+        cursor.execute(
+            "UPDATE chat_messages SET response = ? WHERE id = ?",
+            (error_response, message_id)
+        )
+        conn.commit()
+        conn.close()
+        
+        return {
+            "message": chat_message.message,
+            "response": error_response,
+            "message_id": message_id,
+            "error": True
+        }
 
 @app.get("/chat-history", response_model=List[Dict])
 async def get_chat_history(
@@ -475,15 +669,22 @@ async def get_chat_history(
     if not user_id:
         raise HTTPException(status_code=404, detail="用户不存在")
     
+    # 先清理当前用户的旧记录
+    try:
+        cleanup_old_chat_messages()
+    except Exception as e:
+        print(f"获取聊天历史时清理旧记录失败: {str(e)}")
+        # 不影响获取聊天历史，继续执行
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute(
         """
         SELECT id, message, response, created_at
-        FROM chat_messages 
-        WHERE user_id = ? 
-        ORDER BY created_at DESC 
+        FROM chat_messages
+        WHERE user_id = ?
+        ORDER BY created_at DESC
         LIMIT ?
         """,
         (user_id, limit)

@@ -1,12 +1,13 @@
+import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-    Alert,
-    FlatList,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  Alert,
+  FlatList,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
 
@@ -19,6 +20,7 @@ type ChatMessage = {
 
 export default function AIScreen() {
   const { user, token } = useAuth();
+  const router = useRouter();
   const [message, setMessage] = useState('');
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -134,7 +136,12 @@ export default function AIScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>AI健身建议</Text>
+      <View style={styles.headerContainer}>
+        <TouchableOpacity onPress={() => router.push('../main')} style={styles.backButton}>
+          <Text style={styles.backButtonText}>← 返回主页</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>AI健身建议</Text>
+      </View>
       
       <View style={styles.inputContainer}>
         <TextInput
@@ -153,6 +160,37 @@ export default function AIScreen() {
           <Text style={styles.sendButtonText}>
             {isSending ? '发送中...' : '发送'}
           </Text>
+        </TouchableOpacity>
+      </View>
+      
+      <Text style={styles.sectionTitle}>快速提问</Text>
+      <View style={styles.quickPromptsContainer}>
+        <TouchableOpacity
+          style={styles.quickPromptButton}
+          onPress={() => setMessage('请结合我的身高体重与健身记录，给出接下来的健身建议，比如应该增强哪个部位训练，什么时候应该增加锻炼的重量等')}
+        >
+          <Text style={styles.quickPromptText}>获取个性化健身建议</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={styles.quickPromptButton}
+          onPress={() => setMessage('根据我的健身记录，帮我制定一个下周的训练计划')}
+        >
+          <Text style={styles.quickPromptText}>制定下周训练计划</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={styles.quickPromptButton}
+          onPress={() => setMessage('我最近训练效果如何？有什么需要改进的地方吗？')}
+        >
+          <Text style={styles.quickPromptText}>评估训练效果</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={styles.quickPromptButton}
+          onPress={() => setMessage('请推荐一些适合我当前体能水平的营养建议')}
+        >
+          <Text style={styles.quickPromptText}>获取营养建议</Text>
         </TouchableOpacity>
       </View>
       
@@ -180,12 +218,28 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
     padding: 16,
   },
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  backButton: {
+    padding: 8,
+    backgroundColor: '#4a90e2',
+    borderRadius: 4,
+    marginRight: 10,
+  },
+  backButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
-    marginBottom: 20,
-    textAlign: 'center',
     color: '#333',
+    flex: 1,
+    textAlign: 'center',
   },
   inputContainer: {
     backgroundColor: 'white',
@@ -256,6 +310,7 @@ const styles = StyleSheet.create({
   messageText: {
     fontSize: 16,
     color: '#333',
+    lineHeight: 22,
   },
   emptyText: {
     textAlign: 'center',
@@ -272,5 +327,21 @@ const styles = StyleSheet.create({
     color: 'red',
     textAlign: 'center',
     marginTop: 20,
+  },
+  quickPromptsContainer: {
+    marginBottom: 20,
+  },
+  quickPromptButton: {
+    backgroundColor: '#e6f2ff',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#4a90e2',
+  },
+  quickPromptText: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
   },
 });

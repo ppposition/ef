@@ -1,4 +1,5 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
@@ -29,6 +30,7 @@ type Record = {
 
 export default function FitnessScreen() {
   const { user, token } = useAuth();
+  const router = useRouter();
   const [selectedPart, setSelectedPart] = useState('');
   const [exerciseName, setExerciseName] = useState('');
   const [sets, setSets] = useState('');
@@ -206,7 +208,12 @@ export default function FitnessScreen() {
   return (
     <View style={styles.container}>
       <ScrollView style={styles.scrollView}>
-        <Text style={styles.title}>健身记录</Text>
+        <View style={styles.headerContainer}>
+          <TouchableOpacity onPress={() => router.push('../main')} style={styles.backButton}>
+            <Text style={styles.backButtonText}>← 返回主页</Text>
+          </TouchableOpacity>
+          <Text style={styles.title}>健身记录</Text>
+        </View>
         
         <View style={styles.inputContainer}>
           <Text style={styles.sectionTitle}>选择训练部位</Text>
@@ -362,12 +369,28 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 16,
   },
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  backButton: {
+    padding: 8,
+    backgroundColor: '#4a90e2',
+    borderRadius: 4,
+    marginRight: 10,
+  },
+  backButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
-    marginBottom: 20,
-    textAlign: 'center',
     color: '#333',
+    flex: 1,
+    textAlign: 'center',
   },
   inputContainer: {
     marginBottom: 20,

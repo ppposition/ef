@@ -1,10 +1,12 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
 
 export default function ProfileScreen() {
   const { user, updateUser } = useAuth();
+  const router = useRouter();
   const [birthDate, setBirthDate] = useState<Date | null>(null);
   const [height, setHeight] = useState('');
   const [weight, setWeight] = useState('');
@@ -75,7 +77,12 @@ export default function ProfileScreen() {
 
   return (
     <ScrollView style={styles.container}>
-      <Text style={styles.title}>个人信息</Text>
+      <View style={styles.headerContainer}>
+        <TouchableOpacity onPress={() => router.push('../main')} style={styles.backButton}>
+          <Text style={styles.backButtonText}>← 返回主页</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>个人信息</Text>
+      </View>
       
       <View style={styles.infoContainer}>
         <Text style={styles.label}>用户名</Text>
@@ -144,12 +151,28 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
     padding: 16,
   },
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  backButton: {
+    padding: 8,
+    backgroundColor: '#4a90e2',
+    borderRadius: 4,
+    marginRight: 10,
+  },
+  backButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
-    marginBottom: 20,
-    textAlign: 'center',
     color: '#333',
+    flex: 1,
+    textAlign: 'center',
   },
   infoContainer: {
     backgroundColor: 'white',
