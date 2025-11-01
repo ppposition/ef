@@ -10,6 +10,7 @@ import {
   View
 } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
+import { API_BASE_URL, API_ENDPOINTS } from '../config/api';
 
 type ChatMessage = {
   id: string;
@@ -37,7 +38,7 @@ export default function AIScreen() {
 
     setIsLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/chat-history', {
+      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.CHAT_HISTORY}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -64,7 +65,7 @@ export default function AIScreen() {
 
     setIsSending(true);
     try {
-      const response = await fetch('http://localhost:8000/chat', {
+      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.CHAT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

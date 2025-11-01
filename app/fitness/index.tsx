@@ -13,11 +13,12 @@ import {
   View
 } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
+import { API_BASE_URL, API_ENDPOINTS } from '../config/api';
 
 const BODY_PARTS = ['胸', '背', '肩', '臂', '腿', '腹', '有氧'];
 
 type Record = {
-  id: string;
+  id: number;
   date: string;
   part: string;
   exercise: string;
@@ -55,7 +56,7 @@ export default function FitnessScreen() {
 
     setIsLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/fitness-records', {
+      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.FITNESS_RECORDS}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -94,7 +95,7 @@ export default function FitnessScreen() {
         seconds: seconds ? parseInt(seconds) : null,
       };
 
-      const response = await fetch('http://localhost:8000/fitness-records', {
+      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.FITNESS_RECORDS}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -127,7 +128,7 @@ export default function FitnessScreen() {
     }
   };
 
-  const deleteRecord = async (id: string) => {
+  const deleteRecord = async (id: number) => {
     if (!token) return;
 
     Alert.alert(
@@ -141,7 +142,7 @@ export default function FitnessScreen() {
           onPress: async () => {
             setIsLoading(true);
             try {
-              const response = await fetch(`http://localhost:8000/fitness-records/${id}`, {
+              const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.FITNESS_RECORDS}/${id}`, {
                 method: 'DELETE',
                 headers: {
                   'Authorization': `Bearer ${token}`,
@@ -351,7 +352,7 @@ export default function FitnessScreen() {
         <FlatList
           data={records}
           renderItem={renderItem}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => item.id.toString()}
           scrollEnabled={false}
           ListEmptyComponent={<Text style={styles.emptyText}>暂无健身记录</Text>}
         />

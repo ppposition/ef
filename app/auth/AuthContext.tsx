@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
+import { API_BASE_URL, API_ENDPOINTS, testApiConnection } from '../config/api';
 
 interface User {
   id: string;
@@ -61,7 +62,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const login = async (username: string, password: string): Promise<boolean> => {
     try {
-      const response = await fetch('http://localhost:8000/login', {
+      // 首先测试API连接
+      console.log('开始登录流程，测试API连接...');
+      const isConnected = await testApiConnection();
+      if (!isConnected) {
+        console.error('API连接失败，无法登录');
+        return false;
+      }
+      
+      console.log('API连接成功，尝试登录用户:', username);
+      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.LOGIN}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -71,10 +81,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
       if (response.ok) {
         const data = await response.json();
+        console.log('登录成功，获取到token');
         setToken(data.access_token);
         
         // 获取用户信息
-        const userResponse = await fetch('http://localhost:8000/users/me', {
+        console.log('获取用户信息...');
+        const userResponse = await fetch(`${API_BASE_URL}${API_ENDPOINTS.USER_INFO}`, {
           headers: {
             'Authorization': `Bearer ${data.access_token}`,
           },
@@ -82,6 +94,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
         if (userResponse.ok) {
           const userData = await userResponse.json();
+          console.log('用户信息获取成功:', userData);
           const userInfo: User = {
             id: userData.id,
             username: userData.username,
@@ -96,19 +109,24 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           await AsyncStorage.setItem('token', data.access_token);
           await AsyncStorage.setItem('user', JSON.stringify(userInfo));
           
+          console.log('登录流程完成');
           return true;
+        } else {
+          console.error('获取用户信息失败:', userResponse.status, userResponse.statusText);
         }
+      } else {
+        console.error('登录失败:', response.status, response.statusText);
       }
       return false;
     } catch (error) {
-      console.error('登录失败:', error);
+      console.error('登录过程中发生错误:', error);
       return false;
     }
   };
 
   const register = async (username: string, password: string): Promise<boolean> => {
     try {
-      const response = await fetch('http://localhost:8000/register', {
+      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.REGISTER}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -134,7 +152,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     if (!token || !user) return false;
 
     try {
-      const response = await fetch('http://localhost:8000/users/me', {
+      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.USER_INFO}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

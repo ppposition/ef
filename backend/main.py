@@ -9,10 +9,10 @@ from datetime import date
 import sqlite3
 import os
 import uuid
-import httpx
 import json
 import asyncio
 from functools import wraps
+from openai import OpenAI
 
 app = FastAPI()
 
@@ -36,11 +36,17 @@ security = HTTPBearer()
 DB_PATH = "fitness_app.db"
 
 # 大模型API配置
-LLM_API_URL = os.getenv("LLM_API_URL", "https://chat.sjtu.plus/v1/chat/completions")
+LLM_API_URL = os.getenv("LLM_API_URL", "https://chat.sjtu.plus/v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "sk-dHU4iob3mi1Bgkqr444dC5Be9d714758A2Ca05D30b201324")
 LLM_MODEL = os.getenv("LLM_MODEL", "z-ai/glm-4.6")
 LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "30"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+
+# 初始化OpenAI客户端
+client = OpenAI(
+    api_key=LLM_API_KEY,
+    base_url=LLM_API_URL
+)
 
 # 创建数据库连接
 def get_db_connection():
@@ -162,7 +168,7 @@ class UserResponse(BaseModel):
 class FitnessRecord(BaseModel):
     date: str
     part: str
-    exercise: Optional[str] = None
+    exercise: str
     sets: Optional[int] = None
     reps: Optional[int] = None
     distance: Optional[float] = None
@@ -255,106 +261,266 @@ def retry_on_failure(max_retries=LLM_MAX_RETRIES, delay=1):
         return wrapper
     return decorator
 
+# Agent可用的函数定义
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_date",
+            "description": "获取当前日期",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_fitness_records_tool",
+            "description": "获取健身记录，大模型应该根据用户对话内容智能判断所需的日期范围",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_date": {
+                        "type": "string",
+                        "description": "开始日期，格式：YYYY-MM-DD，根据用户对话内容判断"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "结束日期，格式：YYYY-MM-DD，根据用户对话内容判断"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_user_profile_tool",
+            "description": "获取用户的个人信息，包括身高、体重、出生日期等",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    }
+]
+
+# 工具函数缓存，避免重复调用
+_tool_cache = {}
+
+async def get_current_date() -> str:
+    """获取当前日期（带缓存）"""
+    cache_key = "current_date"
+    if cache_key in _tool_cache:
+        return _tool_cache[cache_key]
+    
+    current_date = datetime.date.today().strftime('%Y-%m-%d')
+    _tool_cache[cache_key] = current_date
+    print(current_date)
+    return current_date
+
+async def get_fitness_records_tool(user_id: int, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict]:
+    """获取指定时间段的健身记录（工具函数版本，带缓存）"""
+    # 创建缓存键
+    cache_key = f"fitness_records_{user_id}_{start_date}_{end_date}"
+    if cache_key in _tool_cache:
+        return _tool_cache[cache_key]
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # 构建查询条件
+    query = """
+    SELECT date, part, exercise, sets, reps, distance, minutes, seconds
+    FROM fitness_records
+    WHERE user_id = ?
+    """
+    params = [user_id]
+    
+    if start_date:
+        query += " AND date >= ?"
+        params.append(start_date)
+    
+    if end_date:
+        query += " AND date <= ?"
+        params.append(end_date)
+    
+    query += " ORDER BY date DESC"
+    
+    cursor.execute(query, params)
+    records = cursor.fetchall()
+    conn.close()
+    
+    result = [dict(record) for record in records]
+    _tool_cache[cache_key] = result
+    return result
+
+async def get_user_profile_tool(user_id: int) -> Dict:
+    """获取用户个人信息（工具函数版本，带缓存）"""
+    cache_key = f"user_profile_{user_id}"
+    if cache_key in _tool_cache:
+        return _tool_cache[cache_key]
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "SELECT username, birth_date, height, weight FROM users WHERE id = ?",
+        (user_id,)
+    )
+    user_info = cursor.fetchone()
+    conn.close()
+    
+    result = dict(user_info) if user_info else {}
+    _tool_cache[cache_key] = result
+    return result
+
+def clear_tool_cache():
+    """清理工具函数缓存"""
+    global _tool_cache
+    _tool_cache.clear()
+
 @retry_on_failure()
-async def call_llm_api(user_message: str, user_context: Dict) -> str:
-    """调用大模型API获取响应"""
+async def call_llm_api(user_message: str, user_id: int) -> str:
+    """调用大模型API获取响应（支持function calling）"""
     
-    # 构建系统提示词，包含用户上下文信息
-    system_prompt = f"""
-    你是一个专业的健身顾问AI助手。请根据用户的个人信息和健身记录提供专业的健身建议。
+    # 构建系统提示词
+    system_prompt = """
+    你是一个专业的健身顾问AI助手。你可以根据用户的问题决定是否需要获取他们的健身记录或个人信息来提供更准确的建议。
+
+    当用户询问关于特定时间段的健身记录、健身建议、训练计划等问题时，你应该按以下流程调用函数：
     
-    用户信息：
-    - 用户名：{user_context.get('username', '未知')}
-    - 出生日期：{user_context.get('birth_date', '未知')}
-    - 身高：{user_context.get('height', '未知')} cm
-    - 体重：{user_context.get('weight', '未知')} kg
+    1. 首先调用 get_current_date 获取当前日期
+    2. 基于当前日期和用户的问题，智能计算所需的日期范围（如"最近一周"、"过去10天"、"上个月"等）
+    3. 然后调用 get_fitness_records_tool 获取相应时间段的健身记录
     
-    最近的健身记录：
-    {format_fitness_records(user_context.get('recent_fitness_records', []))}
-    
-    请根据这些信息，针对用户的问题提供专业、个性化的健身建议。回答要简洁明了，重点突出。
+    可用的函数：
+    1. get_current_date - 获取当前日期
+    2. get_fitness_records_tool - 获取健身记录，需要提供start_date和end_date参数
+    3. get_user_profile_tool - 获取用户个人信息
+
+    请根据用户的问题智能判断是否需要调用函数，以及调用哪个函数。如果不需要额外数据，可以直接回答。
+    注意：避免重复调用相同的函数，系统会自动缓存结果。
     """
     
-    # 准备请求数据
-    headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    try:
+        # 使用OpenAI客户端调用API
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            tools=TOOLS,
+            tool_choice="auto",
+            max_tokens=3000,
+            temperature=0.7
+        )
+        
+        message = response.choices[0].message
+        
+        # 检查是否需要调用函数
+        if message.tool_calls:
+            return await handle_tool_calls(message.tool_calls, user_id, user_message)
+        else:
+            # 直接返回响应
+            return message.content
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"调用大模型API时发生错误: {str(e)}"
+        )
+async def handle_tool_calls(tool_calls, user_id: int, user_message: str, messages: List[Dict] = None, iteration_count: int = 0) -> str:
+    """处理函数调用，支持链式调用（带最大迭代次数限制）"""
+    # 防止无限递归，最大迭代次数设为5
+    MAX_ITERATIONS = 5
+    if iteration_count >= MAX_ITERATIONS:
+        return "抱歉，处理您的请求时遇到了问题，请重新表述您的问题。"
     
-    payload = {
-        "model": LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
+    if messages is None:
+        messages = [
+            {"role": "system", "content": "你是一个专业的健身顾问AI助手。基于获取到的数据，为用户提供专业的健身建议。"},
             {"role": "user", "content": user_message}
-        ],
-        "max_tokens": 3000,
-        "temperature": 0.7
-    }
+        ]
     
-    # 发送请求
-    async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
-        try:
-            response = await client.post(LLM_API_URL, headers=headers, json=payload)
-            response.raise_for_status()
+    tool_results = []
+    
+    for tool_call in tool_calls:
+        function_name = tool_call.function.name
+        arguments = json.loads(tool_call.function.arguments)
+        print(function_name, arguments)
+        
+        if function_name == "get_current_date":
+            current_date = await get_current_date()
+            tool_results.append({
+                "tool_call_id": tool_call.id,
+                "result": {"current_date": current_date}
+            })
+        elif function_name == "get_fitness_records_tool":
+            records = await get_fitness_records_tool(
+                user_id,
+                arguments.get("start_date"),
+                arguments.get("end_date")
+            )
+            tool_results.append({
+                "tool_call_id": tool_call.id,
+                "result": records
+            })
+        elif function_name == "get_user_profile_tool":
+            profile = await get_user_profile_tool(user_id)
+            tool_results.append({
+                "tool_call_id": tool_call.id,
+                "result": profile
+            })
+    
+    # 添加工具调用和结果到消息列表
+    for tool_call in tool_calls:
+        messages.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [tool_call]
+        })
+    
+    for result in tool_results:
+        messages.append({
+            "role": "tool",
+            "tool_call_id": result["tool_call_id"],
+            "content": json.dumps(result["result"], ensure_ascii=False)
+        })
+    
+    try:
+        # 使用OpenAI客户端调用API
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            tools=TOOLS,
+            tool_choice="auto",
+            max_tokens=3000,
+            temperature=0.7
+        )
+        
+        message = response.choices[0].message
+        
+        # 检查是否需要继续调用函数（链式调用）
+        if message.tool_calls:
+            return await handle_tool_calls(message.tool_calls, user_id, user_message, messages, iteration_count + 1)
+        else:
+            # 直接返回响应
+            return message.content
             
-            result = response.json()
-            
-            # 解析响应（根据不同API格式可能需要调整）
-            if "choices" in result and len(result["choices"]) > 0:
-                return result["choices"][0]["message"]["content"]
-            else:
-                raise ValueError("API响应格式不正确")
-                
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(
-                status_code=e.response.status_code,
-                detail=f"大模型API调用失败: {e.response.text}"
-            )
-        except httpx.RequestError as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"网络请求失败: {str(e)}"
-            )
-        except json.JSONDecodeError:
-            raise HTTPException(
-                status_code=500,
-                detail="API响应解析失败"
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"调用大模型API时发生错误: {str(e)}"
-            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"调用大模型API时发生错误: {str(e)}"
+        )
 
-def format_fitness_records(records: List[Dict]) -> str:
-    """格式化健身记录为可读文本"""
-    if not records:
-        return "暂无健身记录"
-    
-    formatted = []
-    for record in records:
-        date = record.get('date', '未知日期')
-        part = record.get('part', '未知部位')
-        exercise = record.get('exercise', '')
-        sets = record.get('sets', '')
-        reps = record.get('reps', '')
-        distance = record.get('distance', '')
-        minutes = record.get('minutes', '')
-        seconds = record.get('seconds', '')
-        
-        record_text = f"- {date} {part}"
-        if exercise:
-            record_text += f" - {exercise}"
-        if sets and reps:
-            record_text += f" ({sets}组 × {reps}次)"
-        if distance:
-            record_text += f" - {distance}米"
-        if minutes or seconds:
-            record_text += f" - {minutes}分{seconds}秒"
-        
-        formatted.append(record_text)
-    
-    return "\n".join(formatted)
+
 
 @app.get("/")
 async def root():
@@ -568,6 +734,9 @@ async def chat_with_ai(
     if not user_id:
         raise HTTPException(status_code=404, detail="用户不存在")
     
+    # 清理工具缓存，确保获取最新数据
+    clear_tool_cache()
+    
     # 清理超过7天的旧聊天记录
     try:
         cleanup_old_chat_messages()
@@ -575,30 +744,9 @@ async def chat_with_ai(
         print(f"聊天时清理旧记录失败: {str(e)}")
         # 不影响正常聊天功能，继续执行
     
-    # 获取用户信息
+    # 保存用户消息
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    cursor.execute(
-        "SELECT birth_date, height, weight FROM users WHERE id = ?",
-        (user_id,)
-    )
-    user_info = cursor.fetchone()
-    
-    # 获取最近的健身记录
-    cursor.execute(
-        """
-        SELECT date, part, exercise, sets, reps, distance, minutes, seconds
-        FROM fitness_records
-        WHERE user_id = ?
-        ORDER BY date DESC
-        LIMIT 10
-        """,
-        (user_id,)
-    )
-    recent_records = cursor.fetchall()
-    
-    # 保存用户消息
     cursor.execute(
         "INSERT INTO chat_messages (user_id, message) VALUES (?, ?)",
         (user_id, chat_message.message)
@@ -608,18 +756,9 @@ async def chat_with_ai(
     conn.commit()
     conn.close()
     
-    # 准备发送给大模型的数据
-    user_context = {
-        "username": username,
-        "birth_date": user_info["birth_date"] if user_info else None,
-        "height": user_info["height"] if user_info else None,
-        "weight": user_info["weight"] if user_info else None,
-        "recent_fitness_records": [dict(record) for record in recent_records]
-    }
-    
     try:
         # 调用大模型API获取响应
-        ai_response = await call_llm_api(chat_message.message, user_context)
+        ai_response = await call_llm_api(chat_message.message, user_id)
         
         # 更新聊天记录，添加AI响应
         conn = get_db_connection()
@@ -668,13 +807,6 @@ async def get_chat_history(
     user_id = get_user_id(username)
     if not user_id:
         raise HTTPException(status_code=404, detail="用户不存在")
-    
-    # 先清理当前用户的旧记录
-    try:
-        cleanup_old_chat_messages()
-    except Exception as e:
-        print(f"获取聊天历史时清理旧记录失败: {str(e)}")
-        # 不影响获取聊天历史，继续执行
     
     conn = get_db_connection()
     cursor = conn.cursor()
