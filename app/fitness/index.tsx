@@ -131,41 +131,27 @@ export default function FitnessScreen() {
   const deleteRecord = async (id: number) => {
     if (!token) return;
 
-    Alert.alert(
-      '确认删除',
-      '确定要删除这条记录吗？',
-      [
-        { text: '取消', style: 'cancel' },
-        { 
-          text: '删除', 
-          style: 'destructive',
-          onPress: async () => {
-            setIsLoading(true);
-            try {
-              const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.FITNESS_RECORDS}/${id}`, {
-                method: 'DELETE',
-                headers: {
-                  'Authorization': `Bearer ${token}`,
-                },
-              });
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.FITNESS_RECORDS}/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
 
-              if (response.ok) {
-                // 从本地状态中移除记录
-                setRecords(prevRecords => prevRecords.filter(record => record.id !== id));
-                Alert.alert('成功', '健身记录删除成功');
-              } else {
-                Alert.alert('错误', '删除健身记录失败');
-              }
-            } catch (error) {
-              Alert.alert('错误', '无法连接到服务器');
-              console.error(error);
-            } finally {
-              setIsLoading(false);
-            }
-          }
-        }
-      ]
-    );
+      if (response.ok) {
+        // 从本地状态中移除记录
+        setRecords(prevRecords => prevRecords.filter(record => record.id !== id));
+      } else {
+        Alert.alert('错误', '删除健身记录失败');
+      }
+    } catch (error) {
+      Alert.alert('错误', '无法连接到服务器');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const formatDate = (date: Date) => {

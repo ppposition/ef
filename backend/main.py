@@ -108,27 +108,57 @@ def init_db():
 # 启动时初始化数据库
 init_db()
 
-# 清理超过7天的聊天记录
+# 清理聊天记录，每个用户只保留最近10条
 def cleanup_old_chat_messages():
-    """删除超过7天的聊天记录"""
+    """清理聊天记录，确保每个用户只保留最近10条记录"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 计算7天前的日期
-        seven_days_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+        # 获取所有用户ID
+        cursor.execute("SELECT DISTINCT user_id FROM chat_messages")
+        user_ids = cursor.fetchall()
         
-        cursor.execute(
-            "DELETE FROM chat_messages WHERE created_at < ?",
-            (seven_days_ago,)
-        )
+        total_deleted = 0
         
-        deleted_count = cursor.rowcount
+        for user_row in user_ids:
+            user_id = user_row["user_id"]
+            
+            # 获取该用户的所有聊天记录，按创建时间降序排列
+            cursor.execute(
+                """
+                SELECT id FROM chat_messages
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                """,
+                (user_id,)
+            )
+            messages = cursor.fetchall()
+            
+            # 如果记录超过10条，删除多余的记录
+            if len(messages) > 10:
+                # 获取需要删除的记录ID（从第11条开始）
+                ids_to_delete = [msg["id"] for msg in messages[10:]]
+                
+                # 构建删除查询
+                placeholders = ','.join(['?' for _ in ids_to_delete])
+                cursor.execute(
+                    f"DELETE FROM chat_messages WHERE id IN ({placeholders})",
+                    ids_to_delete
+                )
+                
+                deleted_count = cursor.rowcount
+                total_deleted += deleted_count
+                
+                if deleted_count > 0:
+                    print(f"用户 {user_id}: 已删除 {deleted_count} 条旧聊天记录")
+        
         conn.commit()
         conn.close()
         
-        if deleted_count > 0:
-            print(f"已删除 {deleted_count} 条超过7天的聊天记录")
+        if total_deleted > 0:
+            print(f"总共已删除 {total_deleted} 条旧聊天记录")
+            
     except Exception as e:
         print(f"清理旧聊天记录时出错: {str(e)}")
         # 确保连接被关闭
@@ -801,7 +831,7 @@ async def chat_with_ai(
 @app.get("/chat-history", response_model=List[Dict])
 async def get_chat_history(
     username: str = Depends(verify_token),
-    limit: int = 20
+    limit: int = 10
 ):
     """获取聊天历史"""
     user_id = get_user_id(username)
