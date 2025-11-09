@@ -13,16 +13,19 @@ import json
 import asyncio
 from functools import wraps
 from openai import OpenAI
+import ssl
 
 app = FastAPI()
 
-# 添加CORS中间件，允许前端应用访问
+# 添加CORS中间件，主要用于Web开发环境
+# 注意：原生移动应用不受CORS限制，此配置主要用于Web版本和开发调试
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 在生产环境中应该指定具体的前端域名
+    allow_origins=["*"],  # 移动应用不需要CORS，这里主要用于Web版本
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # JWT配置
@@ -431,7 +434,7 @@ async def call_llm_api(user_message: str, user_id: int) -> str:
     
     可用的函数：
     1. get_current_date - 获取当前日期
-    2. get_fitness_records_tool - 获取健身记录，需要提供start_date和end_date参数
+    2. get_fitness_records_tool - 获取健身记录，需要提供start_date和end_date参数，每次调用时请先用get_current_date函数获取当前日期，然后根据用户的问题智能判断日期范围
     3. get_user_profile_tool - 获取用户个人信息
 
     请根据用户的问题智能判断是否需要调用函数，以及调用哪个函数。如果不需要额外数据，可以直接回答。
@@ -858,4 +861,92 @@ async def get_chat_history(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    # SSL证书配置
+    # 优先使用Let's Encrypt证书，如果不存在则使用自签名证书
+    letsencrypt_cert = "/etc/letsencrypt/live/positivepassion.top/fullchain.pem"
+    letsencrypt_key = "/etc/letsencrypt/live/positivepassion.top/privkey.pem"
+    self_signed_cert = "server.crt"
+    self_signed_key = "server.key"
+    
+    # 检查Let's Encrypt证书是否存在
+    if os.path.exists(letsencrypt_cert) and os.path.exists(letsencrypt_key):
+        print("使用Let's Encrypt证书")
+        cert_file = letsencrypt_cert
+        key_file = letsencrypt_key
+    else:
+        print("Let's Encrypt证书不存在，使用自签名证书")
+        cert_file = self_signed_cert
+        key_file = self_signed_key
+        
+        # 如果自签名证书不存在，则生成一个
+        if not os.path.exists(cert_file) or not os.path.exists(key_file):
+            print("正在生成自签名证书...")
+            from cryptography import x509
+            from cryptography.x509.oid import NameOID
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import rsa
+            import ipaddress
+            
+            # 生成私钥
+            private_key = rsa.generate_private_key(
+                public_exponent=65537,
+                key_size=2048,
+            )
+            
+            # 创建证书
+            subject = issuer = x509.Name([
+                x509.NameAttribute(NameOID.COUNTRY_NAME, "CN"),
+                x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Beijing"),
+                x509.NameAttribute(NameOID.LOCALITY_NAME, "Beijing"),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Fitness App"),
+                x509.NameAttribute(NameOID.COMMON_NAME, "positivepassion.top"),
+            ])
+            
+            # 添加域名和IP地址到主题备用名称
+            cert = x509.CertificateBuilder().subject_name(
+                subject
+            ).issuer_name(
+                issuer
+            ).public_key(
+                private_key.public_key()
+            ).serial_number(
+                x509.random_serial_number()
+            ).not_valid_before(
+                datetime.datetime.utcnow()
+            ).not_valid_after(
+                datetime.datetime.utcnow() + datetime.timedelta(days=365)
+            ).add_extension(
+                x509.SubjectAlternativeName([
+                    x509.DNSName("localhost"),
+                    x509.DNSName("positivepassion.top"),
+                    x509.IPAddress(ipaddress.IPv4Address("42.192.2.40")),
+                    x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+                ]),
+                critical=False,
+            ).sign(private_key, hashes.SHA256())
+            
+            # 写入证书文件
+            with open(cert_file, "wb") as f:
+                f.write(cert.public_bytes(serialization.Encoding.PEM))
+            
+            # 写入私钥文件
+            with open(key_file, "wb") as f:
+                f.write(private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption()
+                ))
+            
+            print("自签名证书生成完成")
+    
+    # 启动HTTPS服务器，同时监听IPv4和IPv6
+    print(f"启动HTTPS服务器，使用证书: {cert_file}")
+    # 配置同时监听IPv4和IPv6
+    uvicorn.run(
+        app,
+        host="0.0.0.0",  # 使用0.0.0.0监听所有IPv4接口
+        port=8443,
+        ssl_certfile=cert_file,
+        ssl_keyfile=key_file
+    )

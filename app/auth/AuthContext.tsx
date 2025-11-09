@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
-import { API_BASE_URL, API_ENDPOINTS, testApiConnection } from '../config/api';
+import { API_BASE_URL, API_ENDPOINTS, testApiConnection, secureFetch } from '../config/api';
 
 interface User {
   id: string;
@@ -71,11 +71,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       }
       
       console.log('API连接成功，尝试登录用户:', username);
-      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.LOGIN}`, {
+      const response = await secureFetch(API_ENDPOINTS.LOGIN, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({ username, password }),
       });
 
@@ -86,7 +83,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         
         // 获取用户信息
         console.log('获取用户信息...');
-        const userResponse = await fetch(`${API_BASE_URL}${API_ENDPOINTS.USER_INFO}`, {
+        const userResponse = await secureFetch(API_ENDPOINTS.USER_INFO, {
           headers: {
             'Authorization': `Bearer ${data.access_token}`,
           },
@@ -126,11 +123,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const register = async (username: string, password: string): Promise<boolean> => {
     try {
-      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.REGISTER}`, {
+      const response = await secureFetch(API_ENDPOINTS.REGISTER, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({ username, password }),
       });
 
@@ -152,10 +146,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     if (!token || !user) return false;
 
     try {
-      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.USER_INFO}`, {
+      const response = await secureFetch(API_ENDPOINTS.USER_INFO, {
         method: 'PUT',
         headers: {
-          'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({

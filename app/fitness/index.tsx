@@ -29,6 +29,22 @@ type Record = {
   seconds: number | null;
 };
 
+type TimeRangeStats = {
+  totalSessions: number;
+  parts: {
+    [key: string]: number;
+  };
+  records: Record[];
+};
+
+type StatsData = {
+  currentWeek: TimeRangeStats;
+  currentMonth: TimeRangeStats;
+  monthlyStats: {
+    [monthKey: string]: TimeRangeStats;
+  };
+};
+
 export default function FitnessScreen() {
   const { user, token } = useAuth();
   const router = useRouter();
@@ -44,12 +60,24 @@ export default function FitnessScreen() {
   const [date, setDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [stats, setStats] = useState<StatsData>({
+    currentWeek: { totalSessions: 0, parts: {}, records: [] },
+    currentMonth: { totalSessions: 0, parts: {}, records: [] },
+    monthlyStats: {}
+  });
+  const [activeTab, setActiveTab] = useState<'week' | 'month'>('week');
+  const [selectedMonth, setSelectedMonth] = useState<Date | null>(null);
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
 
   useEffect(() => {
     if (user && token) {
       loadRecords();
     }
   }, [user, token]);
+
+  useEffect(() => {
+    calculateStats();
+  }, [records]);
 
   const loadRecords = async () => {
     if (!token) return;
@@ -75,6 +103,96 @@ export default function FitnessScreen() {
       setIsLoading(false);
     }
   };
+
+  const calculateStats = () => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+    
+    // 计算本周数据（从周一开始）
+    const today = new Date(now);
+    const dayOfWeek = today.getDay(); // 0是周日，1是周一...
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+    monday.setHours(0, 0, 0, 0);
+    
+    const weeklyRecords = records.filter(record => {
+      const recordDate = new Date(record.date);
+      return recordDate >= monday;
+    });
+
+    // 计算当前月数据
+    const currentMonthRecords = records.filter(record => {
+      const recordDate = new Date(record.date);
+      return recordDate.getFullYear() === currentYear &&
+             recordDate.getMonth() === currentMonth;
+    });
+
+    // 按月份分组统计
+    const monthlyStats: { [key: string]: TimeRangeStats } = {};
+    records.forEach(record => {
+      const recordDate = new Date(record.date);
+      const monthKey = `${recordDate.getFullYear()}年${recordDate.getMonth() + 1}月`;
+      
+      if (!monthlyStats[monthKey]) {
+        monthlyStats[monthKey] = {
+          totalSessions: 0,
+          parts: {},
+          records: []
+        };
+      }
+
+      monthlyStats[monthKey].totalSessions++;
+      monthlyStats[monthKey].parts[record.part] = (monthlyStats[monthKey].parts[record.part] || 0) + 1;
+      monthlyStats[monthKey].records.push(record);
+    });
+
+    // 计算本周统计
+    const weeklyParts: { [key: string]: number } = {};
+    weeklyRecords.forEach(record => {
+      weeklyParts[record.part] = (weeklyParts[record.part] || 0) + 1;
+    });
+
+    // 计算当前月统计
+    const currentMonthParts: { [key: string]: number } = {};
+    currentMonthRecords.forEach(record => {
+      currentMonthParts[record.part] = (currentMonthParts[record.part] || 0) + 1;
+    });
+
+    setStats({
+      currentWeek: {
+        totalSessions: weeklyRecords.length,
+        parts: weeklyParts,
+        records: weeklyRecords
+      },
+      currentMonth: {
+        totalSessions: currentMonthRecords.length,
+        parts: currentMonthParts,
+        records: currentMonthRecords
+      },
+      monthlyStats
+    });
+  };
+
+  const renderTimeRangeStats = (stats: TimeRangeStats) => (
+    <>
+      <View style={styles.statsContainer}>
+        <Text>训练了{stats.totalSessions}次</Text>
+        {Object.entries(stats.parts).map(([part, count]) => (
+          <Text key={part}>{part}: {count}次</Text>
+        ))}
+      </View>
+      <FlatList
+        data={stats.records.map(record => ({
+          ...record,
+          date: `${record.date} 星期${getWeekday(record.date)}`
+        }))}
+        renderItem={renderItem}
+        keyExtractor={(item) => item.id.toString()}
+        scrollEnabled={false}
+      />
+    </>
+  );
 
   const saveRecord = async () => {
     if (!token || !selectedPart || (!exerciseName && !distance && !minutes && !seconds) || !date) {
@@ -170,7 +288,7 @@ export default function FitnessScreen() {
   const renderItem = ({ item }: { item: Record }) => (
     <View style={styles.recordItem}>
       <View style={styles.recordContent}>
-        <Text style={styles.recordDate}>{item.date} 星期{getWeekday(item.date)}</Text>
+        <Text style={styles.recordDate}>{item.date} {getWeekday(item.date)}</Text>
         <Text style={styles.recordPart}>{item.part}</Text>
         {item.sets && item.reps && <Text>{item.exercise}: {item.sets}组×{item.reps}次</Text>}
         {item.distance && <Text>{item.exercise}: {item.distance}米</Text>}
@@ -334,14 +452,63 @@ export default function FitnessScreen() {
           </TouchableOpacity>
         </View>
         
-        <Text style={styles.sectionTitle}>历史记录</Text>
-        <FlatList
-          data={records}
-          renderItem={renderItem}
-          keyExtractor={(item) => item.id.toString()}
-          scrollEnabled={false}
-          ListEmptyComponent={<Text style={styles.emptyText}>暂无健身记录</Text>}
-        />
+        <View style={styles.tabContainer}>
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'week' && styles.activeTab]}
+            onPress={() => setActiveTab('week')}
+          >
+            <Text>本周统计</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'month' && styles.activeTab]}
+            onPress={() => {
+              setActiveTab('month');
+              // 重置为当前月份
+              setSelectedMonth(null);
+            }}
+          >
+            <Text>月份统计</Text>
+          </TouchableOpacity>
+        </View>
+
+        {activeTab === 'week' ? (
+          renderTimeRangeStats(stats.currentWeek)
+        ) : (
+          <>
+            {renderTimeRangeStats(stats.currentMonth)}
+            <Text style={styles.sectionTitle}>历史月份</Text>
+            <TouchableOpacity
+              onPress={() => setShowMonthPicker(true)}
+              style={styles.dateButton}
+            >
+              <Text>
+                {selectedMonth
+                  ? selectedMonth.toLocaleDateString('zh-CN', {year: 'numeric', month: 'long'})
+                  : '选择月份'
+                }
+              </Text>
+            </TouchableOpacity>
+            {showMonthPicker && (
+              <DateTimePicker
+                testID="monthPicker"
+                value={selectedMonth || new Date()}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(event, selectedDate) => {
+                  if (Platform.OS === 'android') {
+                    setShowMonthPicker(false);
+                  }
+                  setSelectedMonth(selectedDate || null);
+                }}
+              />
+            )}
+            {selectedMonth && (() => {
+              const monthKey = `${selectedMonth.getFullYear()}年${selectedMonth.getMonth() + 1}月`;
+              const monthStats = stats.monthlyStats[monthKey];
+              return monthStats ? renderTimeRangeStats(monthStats) : null;
+            })()}
+          </>
+        )}
       </ScrollView>
     </View>
   );
@@ -508,5 +675,27 @@ const styles = StyleSheet.create({
     color: 'red',
     textAlign: 'center',
     marginTop: 20,
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    marginBottom: 10,
+    backgroundColor: '#f5f5f5',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  tabButton: {
+    flex: 1,
+    padding: 12,
+    alignItems: 'center',
+  },
+  activeTab: {
+    backgroundColor: '#4a90e2',
+  },
+  statsContainer: {
+    backgroundColor: 'white',
+    padding: 12,
+    marginBottom: 8,
+    borderRadius: 4,
+    elevation: 1,
   },
 });

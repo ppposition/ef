@@ -1,30 +1,16 @@
-// 测试环境API基础URL
-export const API_BASE_URL = 'http://localhost:8000';
+// 生产服务器API基础URL
+export const API_BASE_URL = 'https://positivepassion.top';
 
-// 调试函数，用于测试连接
+// 导入SSL辅助函数
+import { secureFetch, testApiConnectionWithSSL } from './sslHelper';
+
+// 调试函数，用于测试连接（使用SSL辅助函数）
 export const testApiConnection = async () => {
-  try {
-    console.log('测试API连接到本地服务器:', API_BASE_URL);
-    const response = await fetch(`${API_BASE_URL}/`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      console.log('本地服务器API连接成功:', data);
-      return true;
-    } else {
-      console.error('本地服务器API连接失败:', response.status, response.statusText);
-      return false;
-    }
-  } catch (error) {
-    console.error('本地服务器API连接错误:', error);
-    return false;
-  }
+  return await testApiConnectionWithSSL();
 };
+
+// 导出安全的fetch函数供其他模块使用
+export { secureFetch };
 
 // API端点
 export const API_ENDPOINTS = {
